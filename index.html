@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Grants QnA Demo</title>
+
+  <!-- Dialogflow Messenger widget -->
+  <link rel="stylesheet" href="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/themes/df-messenger-default.css">
+  <script src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js"></script>
+
+  <style>
+    body{font-family:system-ui,"Segoe UI",Arial,sans-serif;margin:0}
+    .wrap{max-width:800px;margin:0 auto;padding:24px}
+    df-messenger{position:fixed;bottom:16px;right:16px;z-index:999;direction:rtl}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>דמו — Grants QnA</h1>
+    <p>דוגמאות: “מה זמן הטיפול למענק?”, “מי זכאי למענק?”, “איך מגישים בקשה?”.</p>
+  </div>
+
+  <df-messenger
+    project-id="sandbox-kosta-test"
+    agent-id="bc0af719-bdac-48d8-ba78-3befdd3c5a00"
+    location="europe-west1"
+    language-code="he-il"
+    max-query-length="-1">
+    <df-messenger-chat-bubble chat-title="GrantVoiceBot"></df-messenger-chat-bubble>
+  </df-messenger>
+</body>
+</html>
