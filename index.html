@@ -3,49 +3,70 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Grants QnA — Voice Demo</title>
+  <title>Grants QnA Demo</title>
 
-  <!-- Dialogflow Messenger -->
+  <!-- Dialogflow Messenger widget -->
   <link rel="stylesheet" href="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/themes/df-messenger-default.css">
   <script src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js"></script>
 
   <style>
-    body{
-      font-family:system-ui,"Segoe UI",Arial,sans-serif;
-      margin:0;
-      /* רקע עם שכבת בהירות קלה */
-      background:
-        linear-gradient(rgba(255,255,255,.75), rgba(255,255,255,.75)),
-        url('gem.png') center / cover fixed no-repeat;
-    }
-    .wrap{max-width:860px;margin:0 auto;padding:24px}
-    h1{margin:0 0 8px}
-    p{margin:0 0 16px;color:#444}
-    /* מיקרופון צף */
-    #micBtn{
-      position:fixed; bottom:90px; right:16px; z-index:1000;
-      padding:10px 14px; border-radius:999px; border:0;
-      background:#0b57d0; color:#fff; font-size:16px; cursor:pointer;
-      box-shadow:0 6px 18px rgba(0,0,0,.18);
-    }
-    #micBtn[aria-busy="true"]{ background:#d00 }
-    df-messenger{
-      position:fixed; bottom:16px; right:16px; z-index:999; direction:rtl;
-      --df-messenger-font-family:system-ui,"Segoe UI",Arial,sans-serif;
-    }
+    body{font-family:system-ui,"Segoe UI",Arial,sans-serif;margin:0}
+    .wrap{max-width:800px;margin:0 auto;padding:24px}
+    df-messenger{position:fixed;bottom:16px;right:16px;z-index:999;direction:rtl}
   </style>
+  <style>
+  body{
+    margin:0;
+    font-family:system-ui,"Segoe UI",Arial,sans-serif;
+    /* רקע עם שכבת בהירות קלה */
+    background:
+      linear-gradient(rgba(255,255,255,.75), rgba(255,255,255,.75)),
+      url('gem.png') center / cover fixed no-repeat;
+  }
+  /* השאר ה-CSS הקיים (wrap, df-messenger וכו') כמו שהוא */
+</style>
+
 </head>
+  <button id="micBtn" style="position:fixed;bottom:90px;right:16px;z-index:1000;padding:10px 14px;border:0;border-radius:999px;background:#0b57d0;color:#fff;cursor:pointer">🎤 דבר/י</button>
+<script>
+(function(){
+  const df = document.querySelector('df-messenger');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mic = document.getElementById('micBtn');
+
+  async function sendToMessenger(text){
+    const chat = df.shadowRoot.querySelector('df-messenger-chat').shadowRoot;
+    const input = chat.querySelector('textarea');
+    const send  = chat.querySelector('button[aria-label="Send message"],button[aria-label="שלח הודעה"]');
+    input.value = text; input.dispatchEvent(new Event('input',{bubbles:true}));
+    send ? send.click() : input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));
+  }
+  function startMic(){
+    if(!SR){ alert('הדפדפן לא תומך בזיהוי קולי. נסו Chrome/Edge.'); return; }
+    const r = new SR(); r.lang='he-IL'; r.interimResults=false; r.maxAlternatives=1;
+    r.onresult = e => sendToMessenger(e.results[0][0].transcript);
+    r.start();
+  }
+  mic.addEventListener('click', startMic);
+
+  // הקראת תשובות
+  df.addEventListener('df-response-received', e=>{
+    const msgs = e.detail?.response?.queryResult?.responseMessages || [];
+    const txt = msgs.flatMap(m=>m.text?.text||[]).join(' ').trim();
+    if(!txt || !('speechSynthesis' in window)) return;
+    const u = new SpeechSynthesisUtterance(txt);
+    const pick=()=>{ const v=speechSynthesis.getVoices().find(x=>(x.lang||'').toLowerCase().startsWith('he')); if(v) u.voice=v; speechSynthesis.speak(u); };
+    speechSynthesis.getVoices().length?pick():speechSynthesis.onvoiceschanged=pick;
+  });
+})();
+</script>
+
 <body>
   <div class="wrap">
-    <h1>דמו — Grants QnA (עם קול)</h1>
+    <h1>דמו — Grants QnA</h1>
     <p>דוגמאות: “מה זמן הטיפול למענק?”, “מי זכאי למענק?”, “איך מגישים בקשה?”.</p>
-    <p style="font-size:.9rem;color:#666">טיפ: אם אין תמיכה בהכתבה בדפדפן הזה, הכפתור יתריע. Chrome/Edge מומלצים.</p>
   </div>
 
-  <!-- כפתור מיקרופון -->
-  <button id="micBtn" type="button" title="דבר/י">🎤 דבר/י</button>
-
-  <!-- הווידג'ט -->
   <df-messenger
     project-id="sandbox-kosta-test"
     agent-id="bc0af719-bdac-48d8-ba78-3befdd3c5a00"
@@ -54,87 +75,5 @@
     max-query-length="-1">
     <df-messenger-chat-bubble chat-title="GrantVoiceBot"></df-messenger-chat-bubble>
   </df-messenger>
-
-  <script>
-  (function(){
-    const df = document.querySelector('df-messenger');
-    const micBtn = document.getElementById('micBtn');
-
-    // ===== שליחה ל-df-messenger =====
-    async function sendToMessenger(text){
-      const dfRoot = df.shadowRoot;
-      const chat = dfRoot.querySelector('df-messenger-chat');
-      const chatRoot = chat.shadowRoot;
-
-      // textarea + כפתור שליחה בתוך ה-Shadow DOM
-      const input = chatRoot.querySelector('textarea');
-      const sendBtn = chatRoot.querySelector('button[aria-label="Send message"], button[aria-label="שלח הודעה"]');
-
-      if(!input){ alert('לא נמצא שדה קלט של הווידג׳ט'); return; }
-
-      input.value = text;
-      input.dispatchEvent(new Event('input', {bubbles:true}));
-
-      // ננסה לשלוח: כפתור אם קיים, אחרת Enter
-      if (sendBtn) sendBtn.click();
-      else input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter',code:'Enter',bubbles:true}));
-    }
-
-    // ===== זיהוי דיבור (STT) =====
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if(!SR){
-      micBtn.disabled = true;
-      micBtn.textContent = '🎤 לא נתמך בדפדפן זה';
-      micBtn.title = 'Web Speech API לא זמין. נסו Chrome/Edge עדכני.';
-      return;
-    }
-
-    function startMic(){
-      const rec = new SR();
-      rec.lang = 'he-IL';
-      rec.interimResults = false;
-      rec.maxAlternatives = 1;
-
-      rec.onstart = ()=> micBtn.setAttribute('aria-busy','true');
-      rec.onend   = ()=> micBtn.removeAttribute('aria-busy');
-      rec.onerror = (e)=> console.warn('speech error', e);
-
-      rec.onresult = (e)=>{
-        const text = e.results[0][0].transcript;
-        sendToMessenger(text);
-      };
-      try { rec.start(); }
-      catch(e){ console.warn(e); } // במידה והתחיל כבר
-    }
-    micBtn.addEventListener('click', startMic);
-
-    // ===== הקראת תשובות (TTS) =====
-    function speakHe(text){
-      if(!('speechSynthesis' in window)) return;
-      const u = new SpeechSynthesisUtterance(text);
-      const setVoice = ()=>{
-        const voices = speechSynthesis.getVoices();
-        const he = voices.find(v => (v.lang||'').toLowerCase().startsWith('he'));
-        if(he) u.voice = he;
-        speechSynthesis.speak(u);
-      };
-      if(speechSynthesis.getVoices().length===0) speechSynthesis.onvoiceschanged=setVoice; else setVoice();
-    }
-
-    // תופסים את תגובת הבוט ומקריאים
-    df.addEventListener('df-response-received', (ev)=>{
-      try{
-        const msgs = ev.detail?.response?.queryResult?.responseMessages || [];
-        const parts = [];
-        msgs.forEach(m=>{
-          if(m.text?.text) parts.push(...m.text.text.filter(Boolean));
-        });
-        const text = parts.join(' ').trim();
-        if(text) speakHe(text);
-      }catch(e){ console.warn('tts parse', e); }
-    });
-  })();
-  </script>
 </body>
 </html>
-
