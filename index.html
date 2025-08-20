@@ -3,48 +3,24 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Grants QnA — Voice Demo</title>
+  <title>Grants QnA Demo</title>
 
-  <!-- Dialogflow Messenger -->
+  <!-- Dialogflow Messenger widget -->
   <link rel="stylesheet" href="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/themes/df-messenger-default.css">
   <script src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js"></script>
 
   <style>
-    :root { color-scheme: light; }
-    body{
-      margin:0;
-      font-family:system-ui,"Segoe UI",Arial,sans-serif;
-      background:
-        linear-gradient(rgba(255,255,255,.78), rgba(255,255,255,.78)),
-        url('gem.png') center / cover fixed no-repeat;
-    }
-    .wrap{max-width:860px;margin:0 auto;padding:24px}
-    h1{margin:0 0 8px}
-    p{margin:0 0 12px;color:#444}
-
-    /* מיקום הווידג׳ט והכפתור */
-    df-messenger{
-      position:fixed;bottom:16px;right:16px;z-index:999;direction:rtl;
-      --df-messenger-font-family:system-ui,"Segoe UI",Arial,sans-serif;
-    }
-    #micBtn{
-      position:fixed; bottom:90px; right:16px; z-index:1000;
-      padding:10px 14px; border:0; border-radius:999px;
-      background:#0b57d0; color:#fff; cursor:pointer;
-      box-shadow:0 6px 18px rgba(0,0,0,.18); font-size:16px;
-    }
-    #micBtn[aria-busy="true"]{ background:#d00 }
+    body{font-family:system-ui,"Segoe UI",Arial,sans-serif;margin:0}
+    .wrap{max-width:800px;margin:0 auto;padding:24px}
+    df-messenger{position:fixed;bottom:16px;right:16px;z-index:999;direction:rtl}
   </style>
 </head>
-
 <body>
   <div class="wrap">
-    <h1>דמו — Grants QnA (עם קול)</h1>
+    <h1>דמו — Grants QnA</h1>
     <p>דוגמאות: “מה זמן הטיפול למענק?”, “מי זכאי למענק?”, “איך מגישים בקשה?”.</p>
-    <p style="font-size:.9rem;color:#666">אם אין תמיכה בהכתבה בדפדפן, נסו Chrome/Edge.</p>
   </div>
 
-  <!-- הווידג׳ט -->
   <df-messenger
     project-id="sandbox-kosta-test"
     agent-id="bc0af719-bdac-48d8-ba78-3befdd3c5a00"
@@ -53,119 +29,5 @@
     max-query-length="-1">
     <df-messenger-chat-bubble chat-title="GrantVoiceBot"></df-messenger-chat-bubble>
   </df-messenger>
-
-  <!-- כפתור מיקרופון -->
-  <button id="micBtn" type="button" title="דבר/י">🎤 דבר/י</button>
-
-  <script>
-  // כל הקוד רץ רק אחרי שה-DOM מוכן
-  window.addEventListener('DOMContentLoaded', () => {
-    const df = document.querySelector('df-messenger');
-    const micBtn = document.getElementById('micBtn');
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    // ממתין שהווידג׳ט ייטען לחלוטין (כולל Shadow DOM פנימי)
-    async function waitForMessengerReady(timeoutMs = 12000) {
-      await customElements.whenDefined('df-messenger');
-      const t0 = Date.now();
-      return new Promise((resolve, reject) => {
-        const timer = setInterval(() => {
-          try {
-            const root = df.shadowRoot;
-            const chat = root && root.querySelector('df-messenger-chat');
-            const chatRoot = chat && chat.shadowRoot;
-            const textarea = chatRoot && chatRoot.querySelector('textarea');
-            if (textarea) { clearInterval(timer); resolve({ root, chatRoot, textarea }); }
-            if (Date.now() - t0 > timeoutMs) { clearInterval(timer); reject(new Error('Messenger not ready')); }
-          } catch (_) { /* ינסה שוב */ }
-        }, 120);
-      });
-    }
-
-    // פותח את הצ׳אט אם רק הבועה מוצגת
-    function openChatIfClosed(root) {
-      // נסיון דרך ה-Shadow DOM
-      let btn = root?.querySelector('df-messenger-chat-bubble')?.shadowRoot?.querySelector('button');
-      // נסיון דרך ה-Light DOM (גרסאות ישנות)
-      if (!btn) btn = df.querySelector('df-messenger-chat-bubble')?.shadowRoot?.querySelector('button');
-      if (btn) btn.click();
-    }
-
-    // שליחת טקסט לתיבת הקלט ולחיצה על "שלח"
-    function sendToMessenger(ctx, text) {
-      const { chatRoot, textarea } = ctx;
-      openChatIfClosed(ctx.root);
-      textarea.value = text;
-      textarea.dispatchEvent(new Event('input', { bubbles: true }));
-      const sendBtn =
-        chatRoot.querySelector('button[aria-label*="Send"]') ||
-        chatRoot.querySelector('button[aria-label*="שלח"]') ||
-        chatRoot.querySelector('button[type="submit"]');
-      if (sendBtn) sendBtn.click();
-      else textarea.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
-    }
-
-    // הקראת תשובת הבוט (TTS)
-    function hookTTS() {
-      df.addEventListener('df-response-received', (ev) => {
-        try {
-          const msgs = ev.detail?.response?.queryResult?.responseMessages || [];
-          const text = msgs.flatMap(m => m.text?.text || []).join(' ').trim();
-          if (!text || !('speechSynthesis' in window)) return;
-          const u = new SpeechSynthesisUtterance(text);
-          u.lang = 'he-IL';
-          const voice = speechSynthesis.getVoices().find(v => (v.lang || '').toLowerCase().startsWith('he'));
-          if (voice) u.voice = voice;
-          speechSynthesis.speak(u);
-        } catch (e) { console.warn('TTS parse failed', e); }
-      });
-    }
-
-    // הפעלה
-    (async () => {
-      micBtn.disabled = true; // לאפשר לחיצה רק אחרי שהכול מוכן
-      micBtn.textContent = '🎤 טוען...';
-
-      let ctx;
-      try {
-        ctx = await waitForMessengerReady();
-      } catch (e) {
-        console.error(e);
-        micBtn.textContent = '🎤 שגיאה בטעינת הווידג׳ט';
-        return;
-      }
-
-      hookTTS();
-
-      if (!SR) {
-        micBtn.disabled = true;
-        micBtn.textContent = '🎤 לא נתמך בדפדפן זה';
-        micBtn.title = 'Web Speech API לא זמין. מומלץ Chrome/Edge.';
-        return;
-      }
-
-      micBtn.disabled = false;
-      micBtn.textContent = '🎤 דבר/י';
-
-      micBtn.addEventListener('click', () => {
-        const r = new SR();
-        r.lang = 'he-IL';
-        r.interimResults = false;
-        r.maxAlternatives = 1;
-
-        r.onstart = () => micBtn.setAttribute('aria-busy','true');
-        r.onend   = () => micBtn.removeAttribute('aria-busy');
-        r.onerror = () => micBtn.removeAttribute('aria-busy');
-
-        r.onresult = (e) => {
-          const text = e.results[0][0].transcript;
-          if (text && text.trim()) sendToMessenger(ctx, text.trim());
-        };
-
-        try { r.start(); } catch (_) {}
-      });
-    })();
-  });
-  </script>
 </body>
 </html>
