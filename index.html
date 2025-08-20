@@ -15,6 +15,40 @@
     df-messenger{position:fixed;bottom:16px;right:16px;z-index:999;direction:rtl}
   </style>
 </head>
+  <button id="micBtn" style="position:fixed;bottom:90px;right:16px;z-index:1000;padding:10px 14px;border:0;border-radius:999px;background:#0b57d0;color:#fff;cursor:pointer">🎤 דבר/י</button>
+<script>
+(function(){
+  const df = document.querySelector('df-messenger');
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mic = document.getElementById('micBtn');
+
+  async function sendToMessenger(text){
+    const chat = df.shadowRoot.querySelector('df-messenger-chat').shadowRoot;
+    const input = chat.querySelector('textarea');
+    const send  = chat.querySelector('button[aria-label="Send message"],button[aria-label="שלח הודעה"]');
+    input.value = text; input.dispatchEvent(new Event('input',{bubbles:true}));
+    send ? send.click() : input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));
+  }
+  function startMic(){
+    if(!SR){ alert('הדפדפן לא תומך בזיהוי קולי. נסו Chrome/Edge.'); return; }
+    const r = new SR(); r.lang='he-IL'; r.interimResults=false; r.maxAlternatives=1;
+    r.onresult = e => sendToMessenger(e.results[0][0].transcript);
+    r.start();
+  }
+  mic.addEventListener('click', startMic);
+
+  // הקראת תשובות
+  df.addEventListener('df-response-received', e=>{
+    const msgs = e.detail?.response?.queryResult?.responseMessages || [];
+    const txt = msgs.flatMap(m=>m.text?.text||[]).join(' ').trim();
+    if(!txt || !('speechSynthesis' in window)) return;
+    const u = new SpeechSynthesisUtterance(txt);
+    const pick=()=>{ const v=speechSynthesis.getVoices().find(x=>(x.lang||'').toLowerCase().startsWith('he')); if(v) u.voice=v; speechSynthesis.speak(u); };
+    speechSynthesis.getVoices().length?pick():speechSynthesis.onvoiceschanged=pick;
+  });
+})();
+</script>
+
 <body>
   <div class="wrap">
     <h1>דמו — Grants QnA</h1>
@@ -31,3 +65,4 @@
   </df-messenger>
 </body>
 </html>
+
