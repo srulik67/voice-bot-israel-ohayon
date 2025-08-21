@@ -13,29 +13,29 @@
   <script src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js"></script>
 
   <style>
-    body {
+    body{
       margin:0;
       font-family:system-ui,"Segoe UI",Arial,sans-serif;
       background:
         linear-gradient(rgba(255,255,255,.75), rgba(255,255,255,.75)),
         url('gem.png') center / cover fixed no-repeat;
     }
-    .wrap { max-width:800px; margin:0 auto; padding:24px }
-    h1 { margin:0 0 8px }
-    p  { margin:0 0 12px; color:#444 }
+    .wrap{max-width:1000px;margin:0 auto;padding:24px}
+    h1{margin:0 0 8px}
+    p{margin:0 0 12px;color:#444}
 
-    df-messenger {
+    df-messenger{
       position:fixed; bottom:16px; right:16px; z-index:999; direction:rtl;
       --df-messenger-font-family:system-ui,"Segoe UI",Arial,sans-serif;
     }
-    #micBtn {
+    #micBtn{
       position:fixed; bottom:90px; right:16px; z-index:1000;
       padding:10px 14px; border:0; border-radius:999px;
       background:#0b57d0; color:#fff; cursor:pointer; font-size:16px;
       box-shadow:0 6px 18px rgba(0,0,0,.18);
       min-width:140px;
     }
-    #micBtn[aria-busy="true"] { background:#d00 }
+    #micBtn[aria-busy="true"]{ background:#d00 }
   </style>
 </head>
 <body>
@@ -59,23 +59,21 @@
 
   <script>
   (() => {
-    const df      = document.querySelector('df-messenger');
-    const bubble  = document.querySelector('df-messenger-chat-bubble');
-    const mic     = document.getElementById('micBtn');
-    const SR      = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const df     = document.querySelector('df-messenger');
+    const bubble = document.querySelector('df-messenger-chat-bubble');
+    const mic    = document.getElementById('micBtn');
+    const SR     = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-    // נוודא טעינת הווידג'ט
+    // המתנה לטעינת הווידג’ט
     const messengerLoaded = new Promise((resolve) => {
       if (customElements.get('df-messenger')) resolve();
       else window.addEventListener('df-messenger-loaded', resolve, { once: true });
     });
 
     // פותח את הבועה אוטומטית עם טעינת הדף
-    messengerLoaded.then(() => {
-      try { bubble.openChat(); } catch(_) {}
-    });
+    messengerLoaded.then(() => { try { bubble.openChat(); } catch(_) {} });
 
-    // מקריא תשובות עם TTS
+    // TTS על תשובה מהבוט
     df.addEventListener('df-response-received', (e) => {
       try {
         const msgs = e.detail?.response?.queryResult?.responseMessages || [];
@@ -89,6 +87,66 @@
       } catch(_) {}
     });
 
+    // מצב “בקשה תלויה” כדי לא להיתקע על שליחה
+    let requestInFlight = false;
+    df.addEventListener('df-request-sent',   () => { requestInFlight = true;  });
+    df.addEventListener('df-response-received', () => { requestInFlight = false; });
+    df.addEventListener('df-error',          () => { requestInFlight = false; });
+
+    // Fallback מינימלי ל-Shadow DOM אם אין renderCustomText
+    function minimalDomFallbackSend(text) {
+      try {
+        const root = df.shadowRoot;
+        if (!root) throw new Error('no root');
+        const editable = root.querySelector('div[contenteditable="true"], [role="textbox"]');
+        const sendBtn  = root.querySelector('button[aria-label*="Send"], button[aria-label*="שלח"]');
+        if (!editable) throw new Error('no textbox');
+        editable.focus();
+        // הזרקת טקסט
+        document.execCommand('selectAll', false, null);
+        document.execCommand('insertText', false, text);
+        // שליחה
+        if (sendBtn) sendBtn.click();
+        else {
+          editable.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
+          editable.dispatchEvent(new KeyboardEvent('keyup',   { key:'Enter', code:'Enter', bubbles:true }));
+        }
+        return true;
+      } catch(e) {
+        console.warn('fallback send failed', e);
+        return false;
+      }
+    }
+
+    // שליחה יציבה: קודם API רשמי, אחרת fallback
+    async function sendQueryStable(text) {
+      await messengerLoaded;
+      try { bubble.openChat(); } catch(_) {}
+
+      if (requestInFlight) {
+        // נמתין עד שהבקשה הקודמת תסתיים (או 6 שניות מקס')
+        const t0 = Date.now();
+        while (requestInFlight && Date.now() - t0 < 6000) {
+          await new Promise(r => setTimeout(r, 120));
+        }
+      }
+
+      // 1) API רשמי – renderCustomText
+      if (typeof df.renderCustomText === 'function') {
+        try {
+          df.renderCustomText(text);
+          return;
+        } catch(e) {
+          console.warn('renderCustomText failed, trying fallback...', e);
+        }
+      }
+
+      // 2) Fallback מינימלי
+      const ok = minimalDomFallbackSend(text);
+      if (!ok) throw new Error('Unable to send query');
+    }
+
+    // אם ה-STT לא נתמך
     if (!SR) {
       mic.disabled = true;
       mic.textContent = '🎤 לא נתמך בדפדפן זה';
@@ -109,9 +167,8 @@
       try { bubble.openChat(); } catch(_) {}
 
       // הרשאת מיקרופון
-      try {
-        await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch(e) {
+      try { await navigator.mediaDevices.getUserMedia({ audio:true }); }
+      catch(e){
         mic.textContent = '❌ אין הרשאת מיקרופון';
         mic.removeAttribute('aria-busy');
         return;
@@ -168,11 +225,10 @@
         return;
       }
 
-      // שליחה רשמית לבוט
+      // שליחה לבוט (יציב + מניעת "תקוע על שליחה")
       try {
         mic.textContent = '📤 שולח...';
-        await messengerLoaded;
-        await df.sendQuery(text);   // 👈 זה הקסם: שליחה נקייה ל־CX
+        await sendQueryStable(text);
       } catch(e) {
         console.error('send failed', e);
       } finally {
