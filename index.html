@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>הבוט הקולי - מענק עבודה</title>
 
+  <!-- favicon כדי לא לקבל 404 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎤%3C/text%3E%3C/svg%3E">
+
   <!-- Dialogflow Messenger widget -->
   <link rel="stylesheet" href="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/themes/df-messenger-default.css">
   <script src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js"></script>
@@ -13,6 +16,7 @@
     body{
       margin:0;
       font-family:system-ui,"Segoe UI",Arial,sans-serif;
+      /* רקע עם שכבת בהירות קלה */
       background:
         linear-gradient(rgba(255,255,255,.75), rgba(255,255,255,.75)),
         url('gem.png') center / cover fixed no-repeat;
@@ -52,70 +56,79 @@
 
   <script>
   (function () {
-    function boot() {
+    function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+    async function waitForMessengerReady(df, timeoutMs = 60000) {
+      // ודא שהקומפוננטה הותקנה
+      await customElements.whenDefined('df-messenger');
+      const deadline = Date.now() + timeoutMs;
+
+      while (Date.now() < deadline) {
+        try {
+          const root = df.shadowRoot;
+          if (!root) { await sleep(120); continue; }
+
+          // אם הבועה סגורה – פתח
+          const bubble = root.querySelector('df-messenger-chat-bubble');
+          const bubbleBtn = bubble && bubble.shadowRoot && bubble.shadowRoot.querySelector('button');
+          const chat = root.querySelector('df-messenger-chat');
+          if (bubbleBtn && !chat) bubbleBtn.click();
+
+          // חכה שיופיע ה-chat ולו ה-shadowRoot
+          const chatRoot = chat && chat.shadowRoot;
+          const input = chatRoot && chatRoot.querySelector('textarea');
+          if (input) return { root, chatRoot, input };
+        } catch (e) {
+          // ננסה שוב בלולאה
+        }
+        await sleep(150);
+      }
+      throw new Error('Messenger not ready (timeout)');
+    }
+
+    function attachTTS(df){
+      df.addEventListener('df-response-received', (e) => {
+        try {
+          const msgs = e.detail?.response?.queryResult?.responseMessages || [];
+          const text = msgs.flatMap(m => m.text?.text || []).join(' ').trim();
+          if (!text || !('speechSynthesis' in window)) return;
+          const u = new SpeechSynthesisUtterance(text);
+          u.lang = 'he-IL';
+          const v = speechSynthesis.getVoices().find(x => (x.lang||'').toLowerCase().startsWith('he'));
+          if (v) u.voice = v;
+          speechSynthesis.speak(u);
+        } catch {}
+      });
+    }
+
+    function sendToMessenger(df, ctx, text){
+      const { chatRoot, input } = ctx;
+      // לפתוח אם נסגר
+      const bubbleBtn = df.shadowRoot?.querySelector('df-messenger-chat-bubble')?.shadowRoot?.querySelector('button');
+      const chat = df.shadowRoot?.querySelector('df-messenger-chat');
+      if (bubbleBtn && !chat) bubbleBtn.click();
+
+      input.value = text;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      const sendBtn =
+        chatRoot.querySelector('button[aria-label*="Send"]') ||
+        chatRoot.querySelector('button[aria-label*="שלח"]') ||
+        chatRoot.querySelector('button[type="submit"]');
+      if (sendBtn) sendBtn.click();
+      else input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
+    }
+
+    function boot(){
       const df = document.querySelector('df-messenger');
       const micBtn = document.getElementById('micBtn');
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-      // אם משום מה אין כפתור – לא נריץ מאזין כדי לא להפיל את העמוד
-      if (!micBtn) { console.error('micBtn לא נמצא'); return; }
-
-      // המתנה לטעינת ה-widget (כולל textarea בתוך ה-Shadow DOM)
-      async function waitForMessengerReady(timeoutMs = 15000) {
-        await customElements.whenDefined('df-messenger');
-        const t0 = Date.now();
-        return new Promise((resolve, reject) => {
-          const timer = setInterval(() => {
-            try {
-              const root     = df.shadowRoot;
-              const chat     = root && root.querySelector('df-messenger-chat');
-              const chatRoot = chat && chat.shadowRoot;
-              const input    = chatRoot && chatRoot.querySelector('textarea');
-              if (input) { clearInterval(timer); resolve({ root, chatRoot, input }); }
-              if (Date.now() - t0 > timeoutMs) { clearInterval(timer); reject(new Error('Messenger not ready')); }
-            } catch { /* retry */ }
-          }, 120);
-        });
-      }
-
-      function openChatIfClosed(root) {
-        const bubbleBtn = root?.querySelector('df-messenger-chat-bubble')
-                              ?.shadowRoot?.querySelector('button');
-        if (bubbleBtn) bubbleBtn.click();
-      }
-
-      function sendToMessenger(ctx, text) {
-        const { chatRoot, input } = ctx;
-        openChatIfClosed(df.shadowRoot);
-        input.value = text;
-        input.dispatchEvent(new Event('input', { bubbles: true }));
-        const sendBtn =
-          chatRoot.querySelector('button[aria-label*="Send"]') ||
-          chatRoot.querySelector('button[aria-label*="שלח"]') ||
-          chatRoot.querySelector('button[type="submit"]');
-        if (sendBtn) sendBtn.click();
-        else input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
-      }
-
-      function hookTTS() {
-        df.addEventListener('df-response-received', (e) => {
-          try {
-            const msgs = e.detail?.response?.queryResult?.responseMessages || [];
-            const text = msgs.flatMap(m => m.text?.text || []).join(' ').trim();
-            if (!text || !('speechSynthesis' in window)) return;
-            const u = new SpeechSynthesisUtterance(text);
-            u.lang = 'he-IL';
-            const v = speechSynthesis.getVoices().find(x => (x.lang||'').toLowerCase().startsWith('he'));
-            if (v) u.voice = v;
-            speechSynthesis.speak(u);
-          } catch {}
-        });
-      }
+      if (!micBtn) return; // הגנה מחמירה
 
       (async () => {
         let ctx;
         try {
-          ctx = await waitForMessengerReady();
+          ctx = await waitForMessengerReady(df);   // <- זה היה נופל — עכשיו ממתינים ופותחים בועה
         } catch (e) {
           console.error(e);
           micBtn.disabled = true;
@@ -123,7 +136,7 @@
           return;
         }
 
-        hookTTS();
+        attachTTS(df);
 
         if (!SR) {
           micBtn.disabled = true;
@@ -137,20 +150,18 @@
           r.lang = 'he-IL';
           r.interimResults = false;
           r.maxAlternatives = 1;
-
-          r.onstart = () => micBtn.setAttribute('aria-busy', 'true');
+          r.onstart = () => micBtn.setAttribute('aria-busy','true');
           r.onend   = () => micBtn.removeAttribute('aria-busy');
           r.onerror = () => micBtn.removeAttribute('aria-busy');
           r.onresult = (ev) => {
             const text = ev.results[0][0].transcript || '';
-            if (text.trim()) sendToMessenger(ctx, text.trim());
+            if (text.trim()) sendToMessenger(df, ctx, text.trim());
           };
           try { r.start(); } catch {}
         });
       })();
     }
 
-    // להריץ אחרי שה-DOM מוכן
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', boot);
     } else {
