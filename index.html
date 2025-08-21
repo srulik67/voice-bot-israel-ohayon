@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>הבוט הקולי - מענק עבודה</title>
 
-  <!-- favicon קטן כדי להימנע מ-404 -->
+  <!-- favicon קטן כדי למנוע 404 -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎤%3C/text%3E%3C/svg%3E">
 
   <!-- Dialogflow Messenger -->
@@ -58,84 +58,118 @@
   </df-messenger>
 
   <script>
-  (function () {
+  (() => {
     const df  = document.querySelector('df-messenger');
     const mic = document.getElementById('micBtn');
     const SR  = window.SpeechRecognition || window.webkitSpeechRecognition;
 
-    // סשן חדש בכל טעינה (מונע הקשר “תקוע”)
+    // סשן חדש בכל טעינה – מונע הקשר ישן
     df.setAttribute('session-id', 'web-' + Date.now());
 
+    // ===== עזרי DOM עמוקים (Shadow DOM recursion) =====
     const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
 
-    async function ensureDfDefined(timeoutMs=10000){
-      if (customElements.get('df-messenger')) return true;
-      let resolved=false;
-      const p = customElements.whenDefined('df-messenger').then(()=>{resolved=true;return true;});
-      const t = new Promise(res=>setTimeout(()=>res(false), timeoutMs));
-      const ok = await Promise.race([p,t]); return ok || resolved;
+    function queryDeepAll(root, selector){
+      const out = [];
+      function walk(node){
+        if (!node) return;
+        // חפש ב-node עצמו
+        if (node.querySelectorAll) {
+          node.querySelectorAll(selector).forEach(el => out.push(el));
+        }
+        // צלול ל-shadow-children אם קיימים
+        const tree = (node.shadowRoot || node);
+        const kids = tree.children || [];
+        for (const child of kids) {
+          // אם יש shadowRoot פנימי – צלול
+          if (child.shadowRoot) walk(child.shadowRoot);
+          // צלול גם לילדים "רגילים"
+          walk(child);
+        }
+      }
+      walk(root);
+      return out;
+    }
+
+    function queryDeep(root, selector){
+      const all = queryDeepAll(root, selector);
+      return all.length ? all[0] : null;
     }
 
     // פותח את הבועה (כמה נסיונות שונים)
     function openBubble(root){
       try {
-        // 1) כפתור בתוך df-messenger-chat-bubble
-        const btn1 = root.querySelector('df-messenger-chat-bubble')?.shadowRoot?.querySelector('button, [role="button"]');
+        const btn1 = queryDeep(root, 'df-messenger-chat-bubble button, df-messenger-chat-bubble [role="button"]');
         if (btn1) { btn1.click(); return true; }
-        // 2) כפתור גלובלי בתוך ה-shadow (גרסאות ישנות/חדשות)
-        const btn2 = root.querySelector('button[aria-label*="Open"], button[aria-label*="פתח"], button[aria-label*="open"], button[aria-label*="chat"]');
+        const btn2 = queryDeep(root, 'button[aria-label*="Open"], button[aria-label*="פתח"], button[aria-label*="open"], button[aria-label*="chat"]');
         if (btn2) { btn2.click(); return true; }
       } catch(_) {}
       return false;
     }
 
-    // מאתר את שדה הקלט (textarea / contenteditable / input)
-    function findInput(chatRoot){
-      const input =
-        chatRoot.querySelector('textarea, div[contenteditable="true"], input[type="text"], input:not([type])');
-      return input || null;
+    // מאתר שדה קלט בכל וריאציה אפשרית
+    function findAnyInput(root){
+      return (
+        queryDeep(root, 'textarea') ||
+        queryDeep(root, 'div[contenteditable="true"]') ||
+        queryDeep(root, '[role="textbox"]') ||
+        queryDeep(root, 'input[type="text"]') ||
+        queryDeep(root, 'input:not([type])')
+      );
     }
 
-    // ממתין ל-Shadow DOM, פותח בועה אם צריך, ומחזיר refs חיים
+    // מאתר כפתור שליחה בכל וריאציה אפשרית
+    function findSendButton(root){
+      return (
+        queryDeep(root, 'button[aria-label*="Send"], button[aria-label*="שלח"], button[type="submit"]') ||
+        null
+      );
+    }
+
+    // ממתין ל־widget וקלט (כולל פתיחת בועה)
     async function waitForMessengerReady(timeoutMs=30000){
-      const ok = await ensureDfDefined(timeoutMs/2);
-      if (!ok) throw new Error('df-messenger script did not load');
+      // ודא שהקומפוננטה הוגדרה
+      if (!customElements.get('df-messenger')) {
+        let done = false;
+        await Promise.race([
+          customElements.whenDefined('df-messenger').then(()=>{done=true}),
+          sleep(8000)
+        ]);
+        if (!done) throw new Error('df-messenger script did not load');
+      }
 
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
         const root = df.shadowRoot;
         if (!root){ await sleep(120); continue; }
 
-        // פתח את הבועה אם אין עדיין חלון צ׳אט
-        const hasChat = !!root.querySelector('df-messenger-chat');
+        // אם אין חלון צ׳אט – נסה לפתוח
+        const hasChat = !!queryDeep(root, 'df-messenger-chat');
         if (!hasChat) openBubble(root);
 
-        const chatEl = root.querySelector('df-messenger-chat');
-        const chatRoot = chatEl && chatEl.shadowRoot;
-        const input = chatRoot && findInput(chatRoot);
-
-        if (input) return { root, chatRoot, input };
+        const input = findAnyInput(root);
+        if (input) return { root, input };
 
         await sleep(150);
       }
       throw new Error('Messenger not ready (timeout)');
     }
 
-    // שליחה: תמיד משיג refs חיים ומסתדר עם textarea/CE/Input
+    // שליחה: מוצא בכל פעם את הקלט והכפתור בפועל (עמיד לשינויים במבנה)
     async function sendToMessenger(text){
-      const { root, chatRoot, input } = await waitForMessengerReady();
+      const { root, input } = await waitForMessengerReady();
 
-      // אם נסגר בדרך – פתח שוב
-      const hasChat = !!root.querySelector('df-messenger-chat');
+      // אם נסגר תוך כדי – פתח שוב
+      const hasChat = !!queryDeep(root, 'df-messenger-chat');
       if (!hasChat) openBubble(root);
 
-      // כתיבת הטקסט
-      if (input.tagName === 'TEXTAREA' || input instanceof HTMLTextAreaElement) {
+      // כתיבת טקסט לפי סוג האלמנט
+      if (input.tagName === 'TEXTAREA') {
         input.value = text;
         input.dispatchEvent(new Event('input', { bubbles:true }));
-      } else if (input.isContentEditable || input.getAttribute('contenteditable') === 'true') {
+      } else if (input.isContentEditable || input.getAttribute?.('contenteditable') === 'true' || input.getAttribute?.('role') === 'textbox') {
         input.focus();
-        // נקה ואז הזרק טקסט
+        // מחיקה והזרקה בטוחה
         input.textContent = '';
         const range = document.createRange(); range.selectNodeContents(input);
         const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
@@ -147,18 +181,18 @@
         input.dispatchEvent(new Event('input', { bubbles:true }));
       }
 
-      // חפש כפתור שליחה, אחרת שלח Enter
-      const sendBtn =
-        chatRoot.querySelector('button[aria-label*="Send"], button[aria-label*="שלח"], button[type="submit"]');
+      // שליחה
+      const sendBtn = findSendButton(root);
       if (sendBtn) {
         sendBtn.click();
       } else {
-        input.dispatchEvent(new KeyboardEvent('keydown',  { key:'Enter', code:'Enter', bubbles:true }));
-        input.dispatchEvent(new KeyboardEvent('keyup',    { key:'Enter', code:'Enter', bubbles:true }));
+        // Fallback: Enter
+        input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
+        input.dispatchEvent(new KeyboardEvent('keyup',   { key:'Enter', code:'Enter', bubbles:true }));
       }
     }
 
-    // מקריא תשובות
+    // מקריא תשובות (TTS)
     df.addEventListener('df-response-received', (e)=>{
       try{
         const msgs = e.detail?.response?.queryResult?.responseMessages || [];
@@ -172,7 +206,7 @@
       }catch(_){}
     });
 
-    // אם הדפדפן לא תומך בהכתבה
+    // מיקרופון
     if (!SR) {
       mic.disabled = true;
       mic.textContent = '🎤 לא נתמך בדפדפן זה';
@@ -180,7 +214,6 @@
       return;
     }
 
-    // קליק על מיקרופון
     mic.addEventListener('click', async ()=>{
       const old = mic.textContent;
       mic.setAttribute('aria-busy','true');
