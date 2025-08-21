@@ -34,6 +34,7 @@
       padding:10px 14px; border:0; border-radius:999px;
       background:#0b57d0; color:#fff; cursor:pointer; font-size:16px;
       box-shadow:0 6px 18px rgba(0,0,0,.18);
+      min-width: 140px;
     }
     #micBtn[aria-busy="true"]{ background:#d00 }
   </style>
@@ -73,30 +74,24 @@
       const out = [];
       function walk(node){
         if (!node) return;
-        // חפש ב-node עצמו
-        if (node.querySelectorAll) {
-          node.querySelectorAll(selector).forEach(el => out.push(el));
-        }
-        // צלול ל-shadow-children אם קיימים
-        const tree = (node.shadowRoot || node);
-        const kids = tree.children || [];
+        const scope = node.shadowRoot || node;
+        try {
+          scope.querySelectorAll?.(selector)?.forEach(el => out.push(el));
+        } catch(_) {}
+        const kids = scope.children || [];
         for (const child of kids) {
-          // אם יש shadowRoot פנימי – צלול
           if (child.shadowRoot) walk(child.shadowRoot);
-          // צלול גם לילדים "רגילים"
           walk(child);
         }
       }
       walk(root);
       return out;
     }
-
     function queryDeep(root, selector){
       const all = queryDeepAll(root, selector);
       return all.length ? all[0] : null;
     }
 
-    // פותח את הבועה (כמה נסיונות שונים)
     function openBubble(root){
       try {
         const btn1 = queryDeep(root, 'df-messenger-chat-bubble button, df-messenger-chat-bubble [role="button"]');
@@ -106,8 +101,6 @@
       } catch(_) {}
       return false;
     }
-
-    // מאתר שדה קלט בכל וריאציה אפשרית
     function findAnyInput(root){
       return (
         queryDeep(root, 'textarea') ||
@@ -117,33 +110,31 @@
         queryDeep(root, 'input:not([type])')
       );
     }
-
-    // מאתר כפתור שליחה בכל וריאציה אפשרית
     function findSendButton(root){
       return (
-        queryDeep(root, 'button[aria-label*="Send"], button[aria-label*="שלח"], button[type="submit"]') ||
-        null
+        queryDeep(root, 'button[aria-label*="Send"], button[aria-label*="שלח"], button[type="submit"]') || null
       );
     }
 
-    // ממתין ל־widget וקלט (כולל פתיחת בועה)
+    async function ensureDfDefined(timeoutMs=10000){
+      if (customElements.get('df-messenger')) return true;
+      let done=false;
+      await Promise.race([
+        customElements.whenDefined('df-messenger').then(()=>{done=true}),
+        sleep(timeoutMs)
+      ]);
+      return done;
+    }
+
     async function waitForMessengerReady(timeoutMs=30000){
-      // ודא שהקומפוננטה הוגדרה
-      if (!customElements.get('df-messenger')) {
-        let done = false;
-        await Promise.race([
-          customElements.whenDefined('df-messenger').then(()=>{done=true}),
-          sleep(8000)
-        ]);
-        if (!done) throw new Error('df-messenger script did not load');
-      }
+      const ok = await ensureDfDefined(timeoutMs/2);
+      if (!ok) throw new Error('df-messenger script did not load');
 
       const deadline = Date.now() + timeoutMs;
       while (Date.now() < deadline) {
         const root = df.shadowRoot;
         if (!root){ await sleep(120); continue; }
 
-        // אם אין חלון צ׳אט – נסה לפתוח
         const hasChat = !!queryDeep(root, 'df-messenger-chat');
         if (!hasChat) openBubble(root);
 
@@ -155,7 +146,6 @@
       throw new Error('Messenger not ready (timeout)');
     }
 
-    // שליחה: מוצא בכל פעם את הקלט והכפתור בפועל (עמיד לשינויים במבנה)
     async function sendToMessenger(text){
       const { root, input } = await waitForMessengerReady();
 
@@ -169,14 +159,12 @@
         input.dispatchEvent(new Event('input', { bubbles:true }));
       } else if (input.isContentEditable || input.getAttribute?.('contenteditable') === 'true' || input.getAttribute?.('role') === 'textbox') {
         input.focus();
-        // מחיקה והזרקה בטוחה
         input.textContent = '';
         const range = document.createRange(); range.selectNodeContents(input);
         const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
         document.execCommand('insertText', false, text);
         input.dispatchEvent(new InputEvent('input', { bubbles:true, data:text, inputType:'insertText' }));
       } else {
-        // input רגיל
         input.value = text;
         input.dispatchEvent(new Event('input', { bubbles:true }));
       }
@@ -186,13 +174,12 @@
       if (sendBtn) {
         sendBtn.click();
       } else {
-        // Fallback: Enter
         input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
         input.dispatchEvent(new KeyboardEvent('keyup',   { key:'Enter', code:'Enter', bubbles:true }));
       }
     }
 
-    // מקריא תשובות (TTS)
+    // מקריא תשובות
     df.addEventListener('df-response-received', (e)=>{
       try{
         const msgs = e.detail?.response?.queryResult?.responseMessages || [];
@@ -206,7 +193,7 @@
       }catch(_){}
     });
 
-    // מיקרופון
+    // ===== לטפל ב-no-speech: חימום מיקרופון ו־retry =====
     if (!SR) {
       mic.disabled = true;
       mic.textContent = '🎤 לא נתמך בדפדפן זה';
@@ -214,29 +201,101 @@
       return;
     }
 
+    let isListening = false;
+
     mic.addEventListener('click', async ()=>{
+      if (isListening) return;
       const old = mic.textContent;
       mic.setAttribute('aria-busy','true');
+      mic.textContent = '⏳ פותח צ׳אט...';
+
+      try { await waitForMessengerReady(); }
+      catch (e) {
+        console.error(e);
+        mic.textContent = '❌ הווידג׳ט לא נטען';
+        mic.removeAttribute('aria-busy');
+        return;
+      }
+
+      // חימום מיקרופון – מבקש הרשאה ומוודא שיש אודיו
+      try {
+        await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (e) {
+        console.warn('mic permission', e);
+        mic.textContent = '❌ אין הרשאת מיקרופון';
+        mic.removeAttribute('aria-busy');
+        return;
+      }
+
+      isListening = true;
       mic.textContent = '🎙️ מקשיב...';
 
-      const r = new SR();
-      r.lang = 'he-IL';
-      r.interimResults = false;
-      r.maxAlternatives = 1;
+      const attempt = (retry=false) => new Promise((resolve) => {
+        const r = new SR();
+        r.lang = 'he-IL';
+        r.interimResults = true;   // מציג תמלול ביניים
+        r.continuous = false;      // סשן אחד
 
-      r.onend   = ()=>{ mic.removeAttribute('aria-busy'); mic.textContent = old; };
-      r.onerror = (ev)=>{ console.warn('speech error', ev.error||ev); mic.removeAttribute('aria-busy'); mic.textContent = old; };
+        let finalText = '';
+        r.onresult = (ev) => {
+          let interim = '';
+          for (let i = ev.resultIndex; i < ev.results.length; i++) {
+            const t = ev.results[i][0].transcript || '';
+            if (ev.results[i].isFinal) finalText += t;
+            else interim += t;
+          }
+          if (interim) mic.textContent = '🎙️ ' + interim;
+        };
 
-      r.onresult = async (ev)=>{
-        const text = ev.results[0][0].transcript || '';
-        if (!text.trim()) return;
+        r.onerror = async (ev) => {
+          console.warn('speech error', ev.error || ev);
+          if (ev.error === 'no-speech' && !retry) {
+            // ניסיון נוסף אחד
+            r.abort();
+            mic.textContent = '🗣️ נסו שוב...';
+            await sleep(300);
+            resolve({ retry: true });
+          } else {
+            resolve({ finalText: '' });
+          }
+        };
+
+        r.onend = () => resolve({ finalText });
+
+        try { r.start(); } catch (e) {
+          console.warn(e);
+          resolve({ finalText: '' });
+        }
+      });
+
+      // ניסיון 1
+      let res = await attempt(false);
+      if (res.retry) {
+        // ניסיון 2 (לא נבצע יותר מפעמים)
+        mic.textContent = '🎙️ מקשיב...';
+        res = await attempt(true);
+      }
+
+      mic.removeAttribute('aria-busy');
+      mic.textContent = old;
+      isListening = false;
+
+      const text = (res.finalText || '').trim();
+      if (!text) {
+        // לא זוהה דיבור – להראות רמז קטן
+        mic.title = 'לא זוהה דיבור. דבר/י ברור וקרוב למיקרופון, או בדוק/י את בחירת המיקרופון בדפדפן.';
+        return;
+      }
+
+      // שליחה לבוט
+      try {
         mic.textContent = '📤 שולח...';
-        try { await sendToMessenger(text.trim()); }
-        catch (e) { console.error(e); mic.textContent = '❌ שליחה נכשלה'; await sleep(1200); }
-        finally { mic.textContent = old; }
-      };
-
-      try { r.start(); } catch(e){ console.warn(e); mic.removeAttribute('aria-busy'); mic.textContent = old; }
+        await sendToMessenger(text);
+      } catch (e) {
+        console.error('send failed', e);
+      } finally {
+        mic.textContent = old;
+      }
     });
   })();
   </script>
