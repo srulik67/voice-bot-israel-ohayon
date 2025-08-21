@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>הבוט הקולי - מענק עבודה</title>
 
-  <!-- favicon כדי לא לקבל 404 -->
+  <!-- favicon כדי למנוע 404 -->
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎤%3C/text%3E%3C/svg%3E">
 
-  <!-- Dialogflow Messenger widget -->
+  <!-- Dialogflow Messenger -->
   <link rel="stylesheet" href="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/themes/df-messenger-default.css">
   <script src="https://www.gstatic.com/dialogflow-console/fast/df-messenger/prod/v1/df-messenger.js"></script>
 
@@ -16,7 +16,6 @@
     body{
       margin:0;
       font-family:system-ui,"Segoe UI",Arial,sans-serif;
-      /* רקע עם שכבת בהירות קלה */
       background:
         linear-gradient(rgba(255,255,255,.75), rgba(255,255,255,.75)),
         url('gem.png') center / cover fixed no-repeat;
@@ -41,118 +40,110 @@
     <p>דוגמאות: “מה זמן הטיפול למענק?”, “מי זכאי למענק?”, “איך מגישים בקשה?”.</p>
   </div>
 
-  <!-- כפתור מיקרופון -->
   <button id="micBtn" type="button" title="דבר/י">🎤 דבר/י</button>
 
-  <!-- הווידג׳ט -->
   <df-messenger
     project-id="sandbox-kosta-test"
     agent-id="bc0af719-bdac-48d8-ba78-3befdd3c5a00"
     location="europe-west1"
     language-code="he-il"
-    max-query-length="-1">
+    max-query-length="-1"
+    session-id="web-{{RANDOM}}">
     <df-messenger-chat-bubble chat-title="בוט מענק עבודה"></df-messenger-chat-bubble>
   </df-messenger>
 
- <script>
-(function () {
-  function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+  <script>
+  (function () {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const micBtn = document.getElementById('micBtn');
+    const df = document.querySelector('df-messenger');
 
-  async function waitForMessengerReady(df, timeoutMs = 60000) {
-    await customElements.whenDefined('df-messenger');
-    const deadline = Date.now() + timeoutMs;
+    // שים session-id אקראי לכל טעינה (מונע הקשרים תקועים)
+    df.setAttribute('session-id', 'web-' + Date.now());
 
-    while (Date.now() < deadline) {
-      const root = df.shadowRoot;
-      if (!root) { await sleep(120); continue; }
+    function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
-      // פתח בועה אם סגור
-      const bubble = root.querySelector('df-messenger-chat-bubble');
-      const bubbleBtn = bubble?.shadowRoot?.querySelector('button');
-      const chatEl = root.querySelector('df-messenger-chat');
+    // המתנה לטעינת הקומפוננטה + פתיחת הבועה אם צריך
+    async function waitForMessengerReady(timeoutMs = 60000) {
+      await customElements.whenDefined('df-messenger');
+      const deadline = Date.now() + timeoutMs;
+
+      while (Date.now() < deadline) {
+        try {
+          const root = df.shadowRoot;
+          if (!root) { await sleep(120); continue; }
+
+          // אם הבועה סגורה – נפתח
+          const bubble = root.querySelector('df-messenger-chat-bubble');
+          const bubbleBtn = bubble && bubble.shadowRoot && bubble.shadowRoot.querySelector('button');
+          const chat = root.querySelector('df-messenger-chat');
+          if (bubbleBtn && !chat) bubbleBtn.click();
+
+          const chatEl = root.querySelector('df-messenger-chat');
+          const chatRoot = chatEl && chatEl.shadowRoot;
+          const input = chatRoot && chatRoot.querySelector('textarea');
+          if (input) return { root, chatRoot, input };
+
+        } catch(e) { /* ננסה שוב */ }
+        await sleep(150);
+      }
+      throw new Error('Messenger not ready (timeout)');
+    }
+
+    // בכל שליחה נביא "קונטקסט" חי מה-DOM (לא מסתמכים על ctx ישן)
+    async function sendToMessenger(text){
+      const { root, chatRoot, input } = await waitForMessengerReady();
+
+      // פתיחה נוספת אם נסגר פתאום
+      const bubbleBtn = root?.querySelector('df-messenger-chat-bubble')?.shadowRoot?.querySelector('button');
+      const chatEl = root?.querySelector('df-messenger-chat');
       if (bubbleBtn && !chatEl) bubbleBtn.click();
 
-      // בדוק שוב לאחר פתיחה
-      const chat = root.querySelector('df-messenger-chat');
-      const chatRoot = chat?.shadowRoot;
-      const input = chatRoot?.querySelector('textarea');
+      input.value = text;
+      input.dispatchEvent(new Event('input', { bubbles: true }));
 
-      if (input) return { root, chatRoot, input };
+      const sendBtn =
+        chatRoot.querySelector('button[aria-label*="Send"]') ||
+        chatRoot.querySelector('button[aria-label*="שלח"]') ||
+        chatRoot.querySelector('button[type="submit"]');
 
-      await sleep(150);
-    }
-    throw new Error('Messenger not ready');
-  }
-
-  // בחירת קול TTS עברי כשהקולות נטענים
-  function chooseHebrewVoice() {
-    const voices = speechSynthesis.getVoices();
-    return voices.find(v => (v.lang || '').toLowerCase().startsWith('he')) || null;
-  }
-
-  function attachTTS(df){
-    let hebVoice = null;
-    if ('speechSynthesis' in window) {
-      hebVoice = chooseHebrewVoice();
-      window.speechSynthesis.onvoiceschanged = () => { hebVoice = chooseHebrewVoice(); };
+      if (sendBtn) sendBtn.click();
+      else input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
     }
 
-    df.addEventListener('df-response-received', (e) => {
-      try {
-        const msgs = e.detail?.response?.queryResult?.responseMessages || [];
-        const text = msgs.flatMap(m => m.text?.text || []).join(' ').trim();
-        if (!text || !('speechSynthesis' in window)) return;
-        const u = new SpeechSynthesisUtterance(text);
-        u.lang = 'he-IL';
-        if (hebVoice) u.voice = hebVoice;
-        window.speechSynthesis.speak(u);
-      } catch {}
-    });
-  }
+    // הקראת תשובות (TTS)
+    function attachTTS(){
+      df.addEventListener('df-response-received', (e) => {
+        try {
+          const msgs = e.detail?.response?.queryResult?.responseMessages || [];
+          const text = msgs.flatMap(m => m.text?.text || []).join(' ').trim();
+          if (!text || !('speechSynthesis' in window)) return;
+          const u = new SpeechSynthesisUtterance(text);
+          u.lang = 'he-IL';
+          const v = speechSynthesis.getVoices().find(x => (x.lang||'').toLowerCase().startsWith('he'));
+          if (v) u.voice = v;
+          speechSynthesis.speak(u);
+        } catch {}
+      });
+    }
+    attachTTS();
 
-  // שליחה אמינה: הקלדה + אירוע input + שליחת Enter
-  function sendToMessenger(df, ctx, text){
-    const { chatRoot, input } = ctx;
+    // מיקרופון
+    if (!SR) {
+      micBtn.disabled = true;
+      micBtn.textContent = '🎤 לא נתמך בדפדפן זה';
+      micBtn.title = 'Web Speech API לא זמין. מומלץ Chrome/Edge.';
+    } else {
+      micBtn.addEventListener('click', async () => {
+        try {
+          await waitForMessengerReady(); // ודא שהווידג׳ט פתוח ומוכן רגע לפני ההקלטה
+        } catch (e) {
+          console.error(e);
+          micBtn.disabled = true;
+          micBtn.textContent = '🎤 שגיאה בטעינת הווידג׳ט';
+          return;
+        }
 
-    // ודא פתוח
-    const bubbleBtn = df.shadowRoot?.querySelector('df-messenger-chat-bubble')?.shadowRoot?.querySelector('button');
-    const chat = df.shadowRoot?.querySelector('df-messenger-chat');
-    if (bubbleBtn && !chat) bubbleBtn.click();
-
-    input.value = text;
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    // עדיף Enter – עובד גם אם אין aria-label קבוע ל- Send
-    input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
-  }
-
-  function boot(){
-    const df = document.querySelector('df-messenger');
-    const micBtn = document.getElementById('micBtn');
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-    if (!micBtn) return;
-
-    (async () => {
-      let ctx;
-      try {
-        ctx = await waitForMessengerReady(df);
-      } catch (e) {
-        console.error(e);
-        micBtn.disabled = true;
-        micBtn.textContent = '🎤 שגיאה בטעינת הווידג׳ט';
-        return;
-      }
-
-      attachTTS(df);
-
-      if (!SR) {
-        micBtn.disabled = true;
-        micBtn.textContent = '🎤 לא נתמך בדפדפן זה';
-        micBtn.title = 'Web Speech API לא זמין. מומלץ Chrome/Edge בדסקטופ.';
-        return;
-      }
-
-      micBtn.addEventListener('click', () => {
         const r = new SR();
         r.lang = 'he-IL';
         r.interimResults = false;
@@ -160,25 +151,22 @@
 
         r.onstart = () => micBtn.setAttribute('aria-busy','true');
         r.onend   = () => micBtn.removeAttribute('aria-busy');
-        r.onerror = () => micBtn.removeAttribute('aria-busy');
-        r.onresult = (ev) => {
-          const text = ev.results?.[0]?.[0]?.transcript || '';
-          if (text.trim()) sendToMessenger(df, ctx, text.trim());
+        r.onerror = (ev) => { console.warn('speech error', ev.error || ev); micBtn.removeAttribute('aria-busy'); };
+
+        r.onresult = async (ev) => {
+          const text = ev.results[0][0].transcript || '';
+          if (!text.trim()) return;
+          try {
+            await sendToMessenger(text.trim());
+          } catch (e) {
+            console.error('send failed', e);
+          }
         };
 
-        try { r.start(); } catch {}
+        try { r.start(); } catch (e) { console.warn(e); }
       });
-    })();
-  }
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', boot);
-  } else {
-    boot();
-  }
-})();
-</script>
-
+    }
+  })();
+  </script>
 </body>
 </html>
-
