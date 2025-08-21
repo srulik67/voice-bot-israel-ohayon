@@ -54,120 +54,131 @@
     <df-messenger-chat-bubble chat-title="בוט מענק עבודה"></df-messenger-chat-bubble>
   </df-messenger>
 
-  <script>
-  (function () {
-    function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+ <script>
+(function () {
+  function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
-    async function waitForMessengerReady(df, timeoutMs = 60000) {
-      // ודא שהקומפוננטה הותקנה
-      await customElements.whenDefined('df-messenger');
-      const deadline = Date.now() + timeoutMs;
+  async function waitForMessengerReady(df, timeoutMs = 60000) {
+    await customElements.whenDefined('df-messenger');
+    const deadline = Date.now() + timeoutMs;
 
-      while (Date.now() < deadline) {
-        try {
-          const root = df.shadowRoot;
-          if (!root) { await sleep(120); continue; }
+    while (Date.now() < deadline) {
+      const root = df.shadowRoot;
+      if (!root) { await sleep(120); continue; }
 
-          // אם הבועה סגורה – פתח
-          const bubble = root.querySelector('df-messenger-chat-bubble');
-          const bubbleBtn = bubble && bubble.shadowRoot && bubble.shadowRoot.querySelector('button');
-          const chat = root.querySelector('df-messenger-chat');
-          if (bubbleBtn && !chat) bubbleBtn.click();
+      // פתח בועה אם סגור
+      const bubble = root.querySelector('df-messenger-chat-bubble');
+      const bubbleBtn = bubble?.shadowRoot?.querySelector('button');
+      const chatEl = root.querySelector('df-messenger-chat');
+      if (bubbleBtn && !chatEl) bubbleBtn.click();
 
-          // חכה שיופיע ה-chat ולו ה-shadowRoot
-          const chatRoot = chat && chat.shadowRoot;
-          const input = chatRoot && chatRoot.querySelector('textarea');
-          if (input) return { root, chatRoot, input };
-        } catch (e) {
-          // ננסה שוב בלולאה
-        }
-        await sleep(150);
+      // בדוק שוב לאחר פתיחה
+      const chat = root.querySelector('df-messenger-chat');
+      const chatRoot = chat?.shadowRoot;
+      const input = chatRoot?.querySelector('textarea');
+
+      if (input) return { root, chatRoot, input };
+
+      await sleep(150);
+    }
+    throw new Error('Messenger not ready');
+  }
+
+  // בחירת קול TTS עברי כשהקולות נטענים
+  function chooseHebrewVoice() {
+    const voices = speechSynthesis.getVoices();
+    return voices.find(v => (v.lang || '').toLowerCase().startsWith('he')) || null;
+  }
+
+  function attachTTS(df){
+    let hebVoice = null;
+    if ('speechSynthesis' in window) {
+      hebVoice = chooseHebrewVoice();
+      window.speechSynthesis.onvoiceschanged = () => { hebVoice = chooseHebrewVoice(); };
+    }
+
+    df.addEventListener('df-response-received', (e) => {
+      try {
+        const msgs = e.detail?.response?.queryResult?.responseMessages || [];
+        const text = msgs.flatMap(m => m.text?.text || []).join(' ').trim();
+        if (!text || !('speechSynthesis' in window)) return;
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'he-IL';
+        if (hebVoice) u.voice = hebVoice;
+        window.speechSynthesis.speak(u);
+      } catch {}
+    });
+  }
+
+  // שליחה אמינה: הקלדה + אירוע input + שליחת Enter
+  function sendToMessenger(df, ctx, text){
+    const { chatRoot, input } = ctx;
+
+    // ודא פתוח
+    const bubbleBtn = df.shadowRoot?.querySelector('df-messenger-chat-bubble')?.shadowRoot?.querySelector('button');
+    const chat = df.shadowRoot?.querySelector('df-messenger-chat');
+    if (bubbleBtn && !chat) bubbleBtn.click();
+
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    // עדיף Enter – עובד גם אם אין aria-label קבוע ל- Send
+    input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
+  }
+
+  function boot(){
+    const df = document.querySelector('df-messenger');
+    const micBtn = document.getElementById('micBtn');
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    if (!micBtn) return;
+
+    (async () => {
+      let ctx;
+      try {
+        ctx = await waitForMessengerReady(df);
+      } catch (e) {
+        console.error(e);
+        micBtn.disabled = true;
+        micBtn.textContent = '🎤 שגיאה בטעינת הווידג׳ט';
+        return;
       }
-      throw new Error('Messenger not ready (timeout)');
-    }
 
-    function attachTTS(df){
-      df.addEventListener('df-response-received', (e) => {
-        try {
-          const msgs = e.detail?.response?.queryResult?.responseMessages || [];
-          const text = msgs.flatMap(m => m.text?.text || []).join(' ').trim();
-          if (!text || !('speechSynthesis' in window)) return;
-          const u = new SpeechSynthesisUtterance(text);
-          u.lang = 'he-IL';
-          const v = speechSynthesis.getVoices().find(x => (x.lang||'').toLowerCase().startsWith('he'));
-          if (v) u.voice = v;
-          speechSynthesis.speak(u);
-        } catch {}
+      attachTTS(df);
+
+      if (!SR) {
+        micBtn.disabled = true;
+        micBtn.textContent = '🎤 לא נתמך בדפדפן זה';
+        micBtn.title = 'Web Speech API לא זמין. מומלץ Chrome/Edge בדסקטופ.';
+        return;
+      }
+
+      micBtn.addEventListener('click', () => {
+        const r = new SR();
+        r.lang = 'he-IL';
+        r.interimResults = false;
+        r.maxAlternatives = 1;
+
+        r.onstart = () => micBtn.setAttribute('aria-busy','true');
+        r.onend   = () => micBtn.removeAttribute('aria-busy');
+        r.onerror = () => micBtn.removeAttribute('aria-busy');
+        r.onresult = (ev) => {
+          const text = ev.results?.[0]?.[0]?.transcript || '';
+          if (text.trim()) sendToMessenger(df, ctx, text.trim());
+        };
+
+        try { r.start(); } catch {}
       });
-    }
+    })();
+  }
 
-    function sendToMessenger(df, ctx, text){
-      const { chatRoot, input } = ctx;
-      // לפתוח אם נסגר
-      const bubbleBtn = df.shadowRoot?.querySelector('df-messenger-chat-bubble')?.shadowRoot?.querySelector('button');
-      const chat = df.shadowRoot?.querySelector('df-messenger-chat');
-      if (bubbleBtn && !chat) bubbleBtn.click();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
+</script>
 
-      input.value = text;
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      const sendBtn =
-        chatRoot.querySelector('button[aria-label*="Send"]') ||
-        chatRoot.querySelector('button[aria-label*="שלח"]') ||
-        chatRoot.querySelector('button[type="submit"]');
-      if (sendBtn) sendBtn.click();
-      else input.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
-    }
-
-    function boot(){
-      const df = document.querySelector('df-messenger');
-      const micBtn = document.getElementById('micBtn');
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-      if (!micBtn) return; // הגנה מחמירה
-
-      (async () => {
-        let ctx;
-        try {
-          ctx = await waitForMessengerReady(df);   // <- זה היה נופל — עכשיו ממתינים ופותחים בועה
-        } catch (e) {
-          console.error(e);
-          micBtn.disabled = true;
-          micBtn.textContent = '🎤 שגיאה בטעינת הווידג׳ט';
-          return;
-        }
-
-        attachTTS(df);
-
-        if (!SR) {
-          micBtn.disabled = true;
-          micBtn.textContent = '🎤 לא נתמך בדפדפן זה';
-          micBtn.title = 'Web Speech API לא זמין. מומלץ Chrome/Edge.';
-          return;
-        }
-
-        micBtn.addEventListener('click', () => {
-          const r = new SR();
-          r.lang = 'he-IL';
-          r.interimResults = false;
-          r.maxAlternatives = 1;
-          r.onstart = () => micBtn.setAttribute('aria-busy','true');
-          r.onend   = () => micBtn.removeAttribute('aria-busy');
-          r.onerror = () => micBtn.removeAttribute('aria-busy');
-          r.onresult = (ev) => {
-            const text = ev.results[0][0].transcript || '';
-            if (text.trim()) sendToMessenger(df, ctx, text.trim());
-          };
-          try { r.start(); } catch {}
-        });
-      })();
-    }
-
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', boot);
-    } else {
-      boot();
-    }
-  })();
-  </script>
 </body>
 </html>
+
