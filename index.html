@@ -16,13 +16,13 @@
     body{
       margin:0;
       font-family:system-ui,"Segoe UI",Arial,sans-serif;
+      /* תמונת רקע gem.png עם שכבת בהירות */
       background:
         linear-gradient(rgba(255,255,255,.75), rgba(255,255,255,.75)),
         url('gem.png') center / cover fixed no-repeat;
     }
-    .wrap{max-width:1000px;margin:0 auto;padding:24px}
-    h1{margin:0 0 8px}
-    p{margin:0 0 12px;color:#444}
+    .wrap{max-width:800px;margin:0 auto;padding:24px}
+    h1{margin:0 0 8px} p{margin:0 0 12px;color:#444}
 
     df-messenger{
       position:fixed; bottom:16px; right:16px; z-index:999; direction:rtl;
@@ -33,9 +33,12 @@
       padding:10px 14px; border:0; border-radius:999px;
       background:#0b57d0; color:#fff; cursor:pointer; font-size:16px;
       box-shadow:0 6px 18px rgba(0,0,0,.18);
-      min-width:140px;
+      min-width:160px;
     }
     #micBtn[aria-busy="true"]{ background:#d00 }
+    #debug{position:fixed;left:12px;bottom:12px;background:rgba(0,0,0,.6);color:#fff;
+           padding:8px 10px;border-radius:8px;font:12px/1.4 monospace;max-width:44vw;
+           max-height:42vh;overflow:auto;direction:ltr;white-space:pre-wrap}
   </style>
 </head>
 <body>
@@ -44,10 +47,9 @@
     <p>דוגמאות: “מה זמן הטיפול למענק?”, “מי זכאי למענק?”, “איך מגישים בקשה?”.</p>
   </div>
 
-  <!-- כפתור מיקרופון -->
   <button id="micBtn" type="button" title="דבר/י">🎤 דבר/י</button>
+  <div id="debug" hidden></div>
 
-  <!-- הווידג'ט -->
   <df-messenger
     project-id="sandbox-kosta-test"
     agent-id="bc0af719-bdac-48d8-ba78-3befdd3c5a00"
@@ -57,185 +59,206 @@
     <df-messenger-chat-bubble chat-title="בוט מענק עבודה"></df-messenger-chat-bubble>
   </df-messenger>
 
-  <script>
-  (() => {
-    const df     = document.querySelector('df-messenger');
-    const bubble = document.querySelector('df-messenger-chat-bubble');
-    const mic    = document.getElementById('micBtn');
-    const SR     = window.SpeechRecognition || window.webkitSpeechRecognition;
+<script>
+(() => {
+  const df  = document.querySelector('df-messenger');
+  const mic = document.getElementById('micBtn');
+  const dbg = document.getElementById('debug');
 
-    // המתנה לטעינת הווידג’ט
-    const messengerLoaded = new Promise((resolve) => {
-      if (customElements.get('df-messenger')) resolve();
-      else window.addEventListener('df-messenger-loaded', resolve, { once: true });
-    });
+  const SR  = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const log = (...a)=>{ dbg.hidden=false; dbg.textContent += a.join(' ')+'\n'; console.log(...a); };
 
-    // פותח את הבועה אוטומטית עם טעינת הדף
-    messengerLoaded.then(() => { try { bubble.openChat(); } catch(_) {} });
+  // סשן חדש בכל טעינה – מונע “זיכרון” שיחה ישן
+  df.setAttribute('session-id', 'web-' + Date.now());
 
-    // TTS על תשובה מהבוט
-    df.addEventListener('df-response-received', (e) => {
-      try {
-        const msgs = e.detail?.response?.queryResult?.responseMessages || [];
-        const txt  = msgs.flatMap(m => m.text?.text || []).join(' ').trim();
-        if (!txt || !('speechSynthesis' in window)) return;
-        const u = new SpeechSynthesisUtterance(txt);
-        u.lang = 'he-IL';
-        const v = speechSynthesis.getVoices().find(x => (x.lang||'').toLowerCase().startsWith('he'));
-        if (v) u.voice = v;
-        speechSynthesis.speak(u);
-      } catch(_) {}
-    });
+  // ===== עזרי Shadow DOM – מנסים בנימוס, לא חוסמים =====
+  const sleep = (ms)=>new Promise(r=>setTimeout(r,ms));
+  const defined = name => customElements.get(name) || customElements.whenDefined(name);
 
-    // מצב “בקשה תלויה” כדי לא להיתקע על שליחה
-    let requestInFlight = false;
-    df.addEventListener('df-request-sent',   () => { requestInFlight = true;  });
-    df.addEventListener('df-response-received', () => { requestInFlight = false; });
-    df.addEventListener('df-error',          () => { requestInFlight = false; });
-
-    // Fallback מינימלי ל-Shadow DOM אם אין renderCustomText
-    function minimalDomFallbackSend(text) {
-      try {
-        const root = df.shadowRoot;
-        if (!root) throw new Error('no root');
-        const editable = root.querySelector('div[contenteditable="true"], [role="textbox"]');
-        const sendBtn  = root.querySelector('button[aria-label*="Send"], button[aria-label*="שלח"]');
-        if (!editable) throw new Error('no textbox');
-        editable.focus();
-        // הזרקת טקסט
-        document.execCommand('selectAll', false, null);
-        document.execCommand('insertText', false, text);
-        // שליחה
-        if (sendBtn) sendBtn.click();
-        else {
-          editable.dispatchEvent(new KeyboardEvent('keydown', { key:'Enter', code:'Enter', bubbles:true }));
-          editable.dispatchEvent(new KeyboardEvent('keyup',   { key:'Enter', code:'Enter', bubbles:true }));
-        }
-        return true;
-      } catch(e) {
-        console.warn('fallback send failed', e);
-        return false;
+  function deepQuery(root, selector){
+    const q = (n)=> (n.shadowRoot||n).querySelector?.(selector);
+    // נסה ב־light DOM תחילה
+    if (root.querySelector?.(selector)) return root.querySelector(selector);
+    // נסה שכבת shadow אחת (לרוב מספיק)
+    if (root.shadowRoot && root.shadowRoot.querySelector?.(selector))
+      return root.shadowRoot.querySelector(selector);
+    // נסה לדרוך פנימה קצת (בלי BFS כבד)
+    try{
+      const kids = (root.shadowRoot||root).children || [];
+      for (const k of kids){
+        if (q(k)) return q(k);
+        if (k.shadowRoot && k.shadowRoot.querySelector?.(selector))
+          return k.shadowRoot.querySelector(selector);
       }
+    }catch(_){}
+    return null;
+  }
+
+  function openBubble(root){
+    try{
+      // לוחצים על ה-host של ה-bubble (לא נכנסים ל-shadow סגור)
+      const host = df.querySelector('df-messenger-chat-bubble');
+      if (host){ host.click(); return true; }
+      // fallback: נסיון להפעיל כל כפתור “Open”
+      const any = deepQuery(root, 'button[aria-label*="Open"],button[aria-label*="פתח"],button[aria-label*="open"]');
+      if (any){ any.click(); return true; }
+    }catch(_){}
+    return false;
+  }
+
+  function findInput(root){
+    return deepQuery(root, 'textarea')
+        || deepQuery(root, 'div[contenteditable="true"]')
+        || deepQuery(root, '[role="textbox"]')
+        || deepQuery(root, 'input[type="text"]')
+        || deepQuery(root, 'input:not([type])');
+  }
+  function findSend(root){
+    return deepQuery(root, 'button[aria-label*="Send"],button[aria-label*="שלח"],button[type="submit"]');
+  }
+
+  // ננסה להכין את ה-Messenger, אבל לא עוצרים אם לא מוכן
+  async function primeMessenger(maxMs=12000){
+    await defined('df-messenger');
+    const deadline = Date.now() + maxMs;
+    while(Date.now() < deadline){
+      const root = df.shadowRoot;
+      if (root){
+        openBubble(root);
+        const input = findInput(root);
+        if (input) return { root, input };
+      }
+      await sleep(150);
     }
+    return null; // נמשיך לשלוח תוך כדי ניסיונות
+  }
+  // נריץ הכנה ברקע כבר עכשיו
+  primeMessenger();
 
-    // שליחה יציבה: קודם API רשמי, אחרת fallback
-    async function sendQueryStable(text) {
-      await messengerLoaded;
-      try { bubble.openChat(); } catch(_) {}
-
-      if (requestInFlight) {
-        // נמתין עד שהבקשה הקודמת תסתיים (או 6 שניות מקס')
-        const t0 = Date.now();
-        while (requestInFlight && Date.now() - t0 < 6000) {
-          await new Promise(r => setTimeout(r, 120));
-        }
-      }
-
-      // 1) API רשמי – renderCustomText
-      if (typeof df.renderCustomText === 'function') {
-        try {
-          df.renderCustomText(text);
-          return;
-        } catch(e) {
-          console.warn('renderCustomText failed, trying fallback...', e);
-        }
-      }
-
-      // 2) Fallback מינימלי
-      const ok = minimalDomFallbackSend(text);
-      if (!ok) throw new Error('Unable to send query');
+  // מנגנון “שלח כשמתאפשר”: מנסה שוב עד 30ש׳ (לא חוסם)
+  async function enqueueSend(text){
+    const start = Date.now();
+    const ttl   = 30000;       // עד 30 שניות
+    const gap   = 250;         // כל 250ms נסיון
+    while (Date.now() - start < ttl){
+      try{
+        if (await trySendOnce(text)) return true;
+      }catch(_){}
+      await sleep(gap);
     }
+    throw new Error('Messenger not ready (queue timeout)');
+  }
 
-    // אם ה-STT לא נתמך
-    if (!SR) {
-      mic.disabled = true;
-      mic.textContent = '🎤 לא נתמך בדפדפן זה';
-      mic.title = 'Web Speech API לא זמין. מומלץ Chrome/Edge.';
+  async function trySendOnce(text){
+    await defined('df-messenger');
+    const root = df.shadowRoot;
+    if (!root){ openBubble(df); return false; }
+
+    openBubble(root);
+    const input = findInput(root);
+    if (!input) return false;
+
+    // כתיבה
+    if (input.tagName === 'TEXTAREA'){
+      input.value = text; input.dispatchEvent(new Event('input',{bubbles:true}));
+    } else if (input.isContentEditable || input.getAttribute?.('contenteditable')==='true' || input.getAttribute?.('role')==='textbox'){
+      input.focus(); input.textContent='';
+      document.execCommand('insertText', false, text);
+      input.dispatchEvent(new InputEvent('input',{bubbles:true,data:text,inputType:'insertText'}));
+    } else {
+      input.value = text; input.dispatchEvent(new Event('input',{bubbles:true}));
+    }
+    const send = findSend(root);
+    if (send) send.click();
+    else {
+      input.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));
+      input.dispatchEvent(new KeyboardEvent('keyup'  ,{key:'Enter',code:'Enter',bubbles:true}));
+    }
+    return true;
+  }
+
+  // מקריא תגובה
+  df.addEventListener('df-response-received', (e)=>{
+    try{
+      const msgs = e.detail?.response?.queryResult?.responseMessages || [];
+      const txt  = msgs.flatMap(m=>m.text?.text||[]).join(' ').trim();
+      if (!txt || !('speechSynthesis' in window)) return;
+      const u = new SpeechSynthesisUtterance(txt); u.lang='he-IL';
+      const v = speechSynthesis.getVoices().find(x => (x.lang||'').toLowerCase().startsWith('he'));
+      if (v) u.voice = v; speechSynthesis.speak(u);
+    }catch(_){}
+  });
+
+  // ===== מיקרופון – מתחילים מייד, והשליחה מתבצעת דרך התור =====
+  if (!SR){
+    mic.disabled = true;
+    mic.textContent = '🎤 לא נתמך בדפדפן זה';
+    mic.title = 'Web Speech API לא זמין. מומלץ Chrome/Edge.';
+    return;
+  }
+
+  let busy = false;
+
+  mic.addEventListener('click', async ()=>{
+    if (busy) return;
+    busy = true; const label = mic.textContent;
+    mic.setAttribute('aria-busy','true'); mic.textContent='🎙️ מקשיב...';
+
+    // ודא שיש הרשאה – בלי זה recognition לפעמים לא מזניק
+    try {
+      await navigator.mediaDevices.getUserMedia({
+        audio: { noiseSuppression:true, echoCancellation:true, autoGainControl:true }
+      });
+    } catch (e) {
+      log('mic permission', e.name||e);
+      alert('אין הרשאת מיקרופון לדף'); 
+      mic.removeAttribute('aria-busy'); mic.textContent=label; busy=false;
       return;
     }
 
-    let isListening = false;
-    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+    const recOnce = (retry=false)=>new Promise(resolve=>{
+      const r = new SR();
+      r.lang='he-IL'; r.interimResults=true; r.continuous=false;
 
-    mic.addEventListener('click', async () => {
-      if (isListening) return;
-      const old = mic.textContent;
-      mic.setAttribute('aria-busy','true');
-      mic.textContent = '⏳ פותח צ׳אט...';
-
-      await messengerLoaded;
-      try { bubble.openChat(); } catch(_) {}
-
-      // הרשאת מיקרופון
-      try { await navigator.mediaDevices.getUserMedia({ audio:true }); }
-      catch(e){
-        mic.textContent = '❌ אין הרשאת מיקרופון';
-        mic.removeAttribute('aria-busy');
-        return;
-      }
-
-      isListening = true;
-      mic.textContent = '🎙️ מקשיב...';
-
-      const attempt = (retry=false) => new Promise((resolve) => {
-        const r = new SR();
-        r.lang = 'he-IL';
-        r.interimResults = true;
-        r.continuous = false;
-        let finalText = '';
-
-        r.onresult = (ev) => {
-          let interim = '';
-          for (let i = ev.resultIndex; i < ev.results.length; i++) {
-            const t = ev.results[i][0].transcript || '';
-            if (ev.results[i].isFinal) finalText += t;
-            else interim += t;
-          }
-          if (interim) mic.textContent = '🎙️ ' + interim;
-        };
-
-        r.onerror = async (ev) => {
-          if (ev.error === 'no-speech' && !retry) {
-            r.abort();
-            mic.textContent = '🗣️ נסו שוב...';
-            await sleep(300);
-            resolve({ retry:true });
-          } else {
-            resolve({ finalText:'' });
-          }
-        };
-
-        r.onend = () => resolve({ finalText });
-        try { r.start(); } catch(e) { resolve({ finalText:'' }); }
-      });
-
-      let res = await attempt(false);
-      if (res.retry) {
-        mic.textContent = '🎙️ מקשיב...';
-        res = await attempt(true);
-      }
-
-      mic.removeAttribute('aria-busy');
-      mic.textContent = old;
-      isListening = false;
-
-      const text = (res.finalText || '').trim();
-      if (!text) {
-        mic.title = 'לא זוהה דיבור. דבר/י ברור יותר או בדוק/י את בחירת המיקרופון.';
-        return;
-      }
-
-      // שליחה לבוט (יציב + מניעת "תקוע על שליחה")
-      try {
-        mic.textContent = '📤 שולח...';
-        await sendQueryStable(text);
-      } catch(e) {
-        console.error('send failed', e);
-      } finally {
-        mic.textContent = old;
-      }
+      let finalText='';
+      r.onresult = ev=>{
+        let interim='';
+        for (let i=ev.resultIndex;i<ev.results.length;i++){
+          const t = ev.results[i][0].transcript || '';
+          if (ev.results[i].isFinal) finalText += t; else interim += t;
+        }
+        if (interim) mic.textContent = '🎙️ ' + interim;
+      };
+      r.onerror = ev=>{
+        log('speech error', ev.error||ev);
+        if (ev.error==='no-speech' && !retry) resolve({retry:true});
+        else resolve({finalText:''});
+      };
+      r.onend = ()=> resolve({finalText});
+      try { r.start(); } catch(e){ resolve({finalText:''}); }
     });
-  })();
-  </script>
+
+    // נסיון + ריטריי רך במקרה no-speech
+    let res = await recOnce(false);
+    if (res.retry){ mic.textContent='🗣️ נסו שוב...'; await sleep(250); res = await recOnce(true); }
+
+    mic.removeAttribute('aria-busy'); mic.textContent=label; busy=false;
+
+    const text = (res.finalText||'').trim();
+    if (!text){ mic.title='לא זוהה דיבור (no-speech). ודא/י המיקרופון הנכון ודבר/י מיד אחרי הלחיצה.'; return; }
+
+    // שולחים דרך תור – ימשיך לנסות עד שה-Messenger מוכן
+    try {
+      mic.textContent='📤 שולח...';
+      await enqueueSend(text);
+    } catch(e){
+      log(e.message);
+      alert('הצ׳אט עדיין לא מוכן. פתח/י את הבועה לפחות פעם אחת ולחצו שוב.');
+    } finally {
+      mic.textContent=label;
+    }
+  });
+})();
+</script>
 </body>
 </html>
